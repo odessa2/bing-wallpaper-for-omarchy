@@ -46,6 +46,22 @@ Panel {
     return false
   }
 
+  function persistSettings(nextMarket, nextSetWallpaper) {
+    var entry = { id: root.moduleName }
+    for (var key in root.settings) if (key !== "id") entry[key] = root.settings[key]
+    entry.market = String(nextMarket)
+    entry.setWallpaper = nextSetWallpaper === true
+
+    root.settings = entry
+    if (root.hostWidget && "settings" in root.hostWidget)
+      root.hostWidget.settings = entry
+    if (root.service)
+      root.service.setConfiguration(entry.market, entry.setWallpaper)
+    if (root.bar && root.bar.shell && typeof root.bar.shell.updateEntryInline === "function")
+      root.bar.shell.updateEntryInline(root.moduleName, entry)
+    if (root.service) root.service.refresh()
+  }
+
   KeyboardPanel {
     id: panel
     anchorItem: root.anchorItem
@@ -127,7 +143,7 @@ Panel {
           options: root.marketOptions
           value: root.service ? root.service.market : "auto"
           onChanged: function(value) {
-            if (root.service) root.service.configure(value, null)
+            root.persistSettings(value, root.service ? root.service.setWallpaper : true)
           }
         }
 
@@ -138,7 +154,9 @@ Panel {
           checked: root.service ? root.service.setWallpaper : true
           foreground: root.foreground
           fontFamily: root.fontFamily
-          onClicked: if (root.service) root.service.toggleSetWallpaper()
+          onClicked: root.persistSettings(
+            root.service ? root.service.market : "auto",
+            !(root.service ? root.service.setWallpaper : true))
         }
 
         Row {

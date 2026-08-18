@@ -11,6 +11,7 @@ STATE_DIR="$STATE_HOME/omarchy/bing-wallpaper"
 LOCK_FILE="$STATE_DIR/update.lock"
 SELECTED_MARKET="auto"
 SET_WALLPAPER="true"
+LEGACY_CONFIG_FOUND="false"
 
 log() {
   printf 'bing-wallpaper: %s\n' "$*" >&2
@@ -46,7 +47,25 @@ locale_market() {
     | awk -F- '{ print tolower($1) "-" toupper($2) }'
 }
 
-read_config() {
+validate_settings() {
+  [[ $SET_WALLPAPER == "true" || $SET_WALLPAPER == "false" ]] || {
+    log "setWallpaper must be true or false"
+    return 1
+  }
+
+  if [[ $SELECTED_MARKET != "auto" && $SELECTED_MARKET != "global" && ! $SELECTED_MARKET =~ ^[a-z]{2}-[A-Z]{2}$ ]]; then
+    log "market must be auto, global, or a value such as de-DE"
+    return 1
+  fi
+}
+
+load_settings() {
+  SELECTED_MARKET="${1:-}"
+  SET_WALLPAPER="${2:-}"
+  validate_settings
+}
+
+read_legacy_config() {
   [[ -f $CONFIG_FILE ]] || return 0
 
   jq -e 'type == "object"' "$CONFIG_FILE" >/dev/null 2>&1 || {
@@ -56,46 +75,17 @@ read_config() {
 
   SELECTED_MARKET=$(jq -r '.market // "auto"' "$CONFIG_FILE")
   SET_WALLPAPER=$(jq -r 'if has("setWallpaper") then .setWallpaper else true end' "$CONFIG_FILE")
-
-  [[ $SET_WALLPAPER == "true" || $SET_WALLPAPER == "false" ]] || {
-    log "setWallpaper must be true or false in $CONFIG_FILE"
+  LEGACY_CONFIG_FOUND="true"
+  validate_settings || {
+    log "invalid legacy configuration in $CONFIG_FILE"
     return 1
   }
-
-  if [[ $SELECTED_MARKET != "auto" && $SELECTED_MARKET != "global" && ! $SELECTED_MARKET =~ ^[a-z]{2}-[A-Z]{2}$ ]]; then
-    log "market must be auto, global, or a value such as de-DE in $CONFIG_FILE"
-    return 1
-  fi
-
-}
-
-write_config() {
-  local market="${1:-}"
-  local set_wallpaper="${2:-}"
-
-  [[ $market == "auto" || $market == "global" || $market =~ ^[a-z]{2}-[A-Z]{2}$ ]] || {
-    log "market must be auto, global, or a value such as de-DE"
-    return 1
-  }
-  [[ $set_wallpaper == "true" || $set_wallpaper == "false" ]] || {
-    log "setWallpaper must be true or false"
-    return 1
-  }
-
-  mkdir -p "$(dirname "$CONFIG_FILE")"
-  jq -n \
-    --arg market "$market" \
-    --argjson setWallpaper "$set_wallpaper" \
-    '{market: $market, setWallpaper: $setWallpaper}' \
-    >"$CONFIG_FILE.tmp" \
-    && mv "$CONFIG_FILE.tmp" "$CONFIG_FILE"
 }
 
 print_status() {
   local effective_market
   local current_json='null'
 
-  read_config || return 1
   effective_market="$SELECTED_MARKET"
   [[ $effective_market != "auto" ]] || effective_market=$(locale_market)
   [[ ! -f $CACHE_DIR/current.json ]] \
@@ -105,9 +95,11 @@ print_status() {
     --arg market "$SELECTED_MARKET" \
     --arg effectiveMarket "$effective_market" \
     --argjson setWallpaper "$SET_WALLPAPER" \
+    --argjson legacyConfigFound "$LEGACY_CONFIG_FOUND" \
     --argjson current "$current_json" \
     '{market: $market, effectiveMarket: $effectiveMarket,
       setWallpaper: $setWallpaper,
+      legacyConfigFound: $legacyConfigFound,
       current: $current}'
 }
 
@@ -226,7 +218,6 @@ main() {
   exec 9>"$LOCK_FILE"
   flock -n 9 || return 0
 
-  read_config || return 1
   [[ $SELECTED_MARKET != "auto" ]] || SELECTED_MARKET=$(locale_market)
 
   selected_image=$(fetch_market "$SELECTED_MARKET") || true
@@ -248,21 +239,23 @@ main() {
 
 case "${1:-update}" in
   update)
+    if [[ -n ${2:-} && -n ${3:-} ]]; then
+      load_settings "$2" "$3" || exit 1
+    else
+      require_command jq && read_legacy_config || exit 1
+    fi
     main
     ;;
-  configure)
-    require_command jq && read_config || exit 1
-    next_market="${2:--}"
-    next_set_wallpaper="${3:--}"
-    [[ $next_market != "-" ]] || next_market="$SELECTED_MARKET"
-    [[ $next_set_wallpaper != "-" ]] || next_set_wallpaper="$SET_WALLPAPER"
-    write_config "$next_market" "$next_set_wallpaper"
-    ;;
   status)
-    require_command jq && print_status
+    require_command jq || exit 1
+    load_settings "${2:-auto}" "${3:-true}" || exit 1
+    print_status
+    ;;
+  legacy-status)
+    require_command jq && read_legacy_config && print_status
     ;;
   *)
-    log "usage: update-wallpaper [update|status|configure <market> <set-wallpaper>]"
+    log "usage: update-wallpaper [update|status] [market] [set-wallpaper]"
     exit 2
     ;;
 esac

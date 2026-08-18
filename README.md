@@ -57,13 +57,14 @@ omarchy plugin enable io.github.odessa2.bing-wallpaper
 
 ## Configure
 
-Configuration is optional. Copy `config.example.json` to
-`~/.config/omarchy/bing-wallpaper.json`:
+Use the native bar panel to select a market and toggle **Set as wallpaper**.
+The values are stored with the widget in `~/.config/omarchy/shell.json`:
 
 ```json
 {
-  "market": "auto",
-  "setWallpaper": true
+  "id": "io.github.odessa2.bing-wallpaper",
+  "market": "de-DE",
+  "setWallpaper": false
 }
 ```
 
@@ -73,8 +74,9 @@ Configuration is optional. Copy `config.example.json` to
   market without changing the system background. The bar panel exposes this as
   a native toggle.
 
-The bar panel writes this configuration for you and refreshes immediately.
-After a manual file edit, refresh with:
+Omarchy writes this entry atomically and hot-reloads it without rebuilding the
+rest of the bar. The settings are also available through Omarchy's native bar
+widget settings UI. After a manual file edit, refresh with:
 
 ```sh
 omarchy-shell bing-wallpaper refresh
@@ -88,6 +90,13 @@ omarchy-shell bing-wallpaper status
 
 Image metadata is available in the cache as `current.json`, including Bing's
 market, copyright attribution, and link.
+
+### Upgrading from 1.0.0
+
+When no inline settings exist yet, version 1.0.1 reads the previous
+`~/.config/omarchy/bing-wallpaper.json` as a fallback. The next change made in
+the bar panel stores both values in `shell.json`; the legacy file can then be
+removed. The plugin never rewrites `shell.json` merely because it was updated.
 
 ## Remove
 

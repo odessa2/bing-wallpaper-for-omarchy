@@ -29,6 +29,7 @@ BarWidget {
     panelLoader.item.anchorItem = button
     panelLoader.item.hostWidget = root
     panelLoader.item.service = root.service
+    panelLoader.item.settings = root.settings
   }
 
   implicitWidth: button.implicitWidth
@@ -36,6 +37,7 @@ BarWidget {
 
   onBarChanged: injectPanel()
   onServiceChanged: injectPanel()
+  onSettingsChanged: injectPanel()
 
   Loader {
     id: panelLoader
