@@ -55,6 +55,24 @@ omarchy-shell shell rescanPlugins
 omarchy plugin enable io.github.odessa2.bing-wallpaper
 ```
 
+## Update
+
+Update an installed Git-managed plugin through Omarchy so it is validated and
+rescanned after the fast-forward:
+
+```sh
+omarchy plugin update io.github.odessa2.bing-wallpaper
+```
+
+When updating the installed checkout manually during development, force a
+rescan after all files have changed. If old and new QML components still appear
+mixed, restart the shell:
+
+```sh
+omarchy-shell shell rescanPlugins
+omarchy restart shell
+```
+
 ## Configure
 
 Use the native bar panel to select a market and toggle **Set as wallpaper**.
@@ -76,11 +94,8 @@ The values are stored with the widget in `~/.config/omarchy/shell.json`:
 
 Omarchy writes this entry atomically and hot-reloads it without rebuilding the
 rest of the bar. The settings are also available through Omarchy's native bar
-widget settings UI. After a manual file edit, refresh with:
-
-```sh
-omarchy-shell bing-wallpaper refresh
-```
+widget settings UI. A valid manual `shell.json` edit is hot-reloaded and causes
+the service to refresh automatically.
 
 Inspect the service state with:
 
