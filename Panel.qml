@@ -40,6 +40,11 @@ Panel {
 
   function close() { root.controller.hide() }
   function toggle() { root.opened ? close() : open() }
+  function formatLocalTime(value) {
+    var timestamp = new Date(String(value || ""))
+    if (isNaN(timestamp.getTime())) return ""
+    return timestamp.toLocaleString(Qt.locale(), "yyyy-MM-dd HH:mm")
+  }
   function switchPanel(direction) {
     if (bar && typeof bar.switchPanelFrom === "function")
       return bar.switchPanelFrom(barIdentity, direction)
@@ -89,7 +94,7 @@ Panel {
           title: "Bing Wallpaper for Omarchy"
           meta: service && service.busy
             ? "Updating"
-            : (service && service.lastRunAt !== "" ? "Updated " + service.lastRunAt.slice(0, 16).replace("T", " ") : "Ready")
+            : (service && service.lastRunAt !== "" ? "Last checked " + root.formatLocalTime(service.lastRunAt) : "Ready")
           detail: service ? service.effectiveMarket : ""
           foreground: root.foreground
           fontFamily: root.fontFamily
