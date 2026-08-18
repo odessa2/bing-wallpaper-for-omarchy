@@ -93,12 +93,16 @@ market, copyright attribution, and link.
 
 ```sh
 omarchy plugin remove io.github.odessa2.bing-wallpaper
-rm -r ~/.cache/omarchy/bing-wallpaper ~/.local/state/omarchy/bing-wallpaper
 ```
 
-The final cleanup command is optional and removes downloaded images and the
-plugin's lock file. Omarchy keeps the last selected background until another
-background is chosen.
+Omarchy keeps the last selected background after the plugin is removed. If it
+points into the plugin cache, select another background before deleting the
+downloaded images. Then optionally remove all retained plugin data:
+
+```sh
+rm -f ~/.config/omarchy/bing-wallpaper.json
+rm -rf ~/.cache/omarchy/bing-wallpaper ~/.local/state/omarchy/bing-wallpaper
+```
 
 ## Data source
 

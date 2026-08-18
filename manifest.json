@@ -5,7 +5,7 @@
   "version": "1.0.0",
   "author": "Daniel Goetz",
   "license": "MIT",
-  "description": "Fetches the current Bing image for a selected market and keeps the Omarchy background up to date.",
+  "description": "Downloads Bing's current image for one selected market hourly and optionally sets it as the Omarchy background.",
   "kinds": [
     "service",
     "bar-widget"
