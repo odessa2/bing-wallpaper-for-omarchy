@@ -15,6 +15,8 @@ Item {
   property bool setWallpaper: true
   property var currentImage: null
   property var pendingConfiguration: null
+  property int configurationRevision: 0
+  property int statusConfigurationRevision: -1
   readonly property bool busy: updateProcess.running || configureProcess.running
 
   readonly property string sourceDir: manifest && manifest.__sourceDir
@@ -33,6 +35,7 @@ Item {
 
   function configure(nextMarket, nextSetWallpaper) {
     if (helperPath === "") return
+    configurationRevision += 1
     market = String(nextMarket)
     setWallpaper = nextSetWallpaper === true
     if (configureProcess.running) {
@@ -49,6 +52,7 @@ Item {
 
   function loadStatus() {
     if (helperPath === "" || statusProcess.running) return
+    statusConfigurationRevision = configurationRevision
     statusProcess.command = [helperPath, "status"]
     statusProcess.running = true
   }
@@ -56,9 +60,11 @@ Item {
   function applyStatus(raw) {
     try {
       var data = JSON.parse(String(raw || "{}"))
-      market = String(data.market || "auto")
+      if (statusConfigurationRevision === configurationRevision) {
+        market = String(data.market || "auto")
+        setWallpaper = data.setWallpaper !== false
+      }
       effectiveMarket = String(data.effectiveMarket || "en-US")
-      setWallpaper = data.setWallpaper !== false
       currentImage = data.current || null
     } catch (error) {
       console.warn("bing-wallpaper: invalid status:", error)
@@ -97,8 +103,10 @@ Item {
         root.runConfiguration(next.market, next.setWallpaper)
       } else if (exitCode === 0) {
         root.refresh()
-      } else if (root.lastError !== "") {
-        console.warn("bing-wallpaper:", root.lastError)
+      } else {
+        if (root.lastError !== "")
+          console.warn("bing-wallpaper:", root.lastError)
+        root.loadStatus()
       }
     }
   }
