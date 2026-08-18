@@ -1,13 +1,14 @@
 # Bing Wallpaper for Omarchy
 
-A headless Omarchy Quattro plugin that downloads Bing's current regional and
-international homepage images, then sets the preferred one as the system
-background. It checks immediately when Omarchy Shell starts and every hour
-afterward.
+A native Omarchy Quattro bar widget and background service that downloads
+Bing's current homepage image for one selected market, then optionally sets it
+as the system background. It checks immediately when Omarchy Shell starts and
+every hour afterward.
 
-The regional image is selected by default. If that request fails, the plugin
-falls back to the international image. Downloads are atomic, unchanged images
-are reused, and the cache retains the eight most recent images from each feed.
+The market follows the desktop locale by default. Downloads are atomic,
+unchanged images are reused, and the cache retains the eight most recent images
+for each market you have selected. Only the currently selected market is
+requested and downloaded during a check.
 
 ## Requirements
 
@@ -18,21 +19,35 @@ are reused, and the cache retains the eight most recent images from each feed.
 The plugin runs without elevated privileges. It contacts Bing's homepage image
 feed and stores images under `~/.cache/omarchy/bing-wallpaper/`.
 
+## Bar widget
+
+Enable the plugin to place its native widget in the right section of the
+Omarchy bar. Left-click it to open a panel with:
+
+- A preview and Bing's image attribution
+- Market selection, including Bing's Global / Rest-of-World feed
+- A **Set as wallpaper** toggle
+- A **Refresh now** button and update status
+
+Right-click the bar widget to refresh immediately. With **Set as wallpaper**
+off, hourly polling and download of the selected market continue but the
+desktop is not changed.
+
 ## Install
 
-Once this repository has a remote:
+Install directly from GitHub:
 
 ```sh
-omarchy plugin add https://github.com/OWNER/REPOSITORY.git --enable
+omarchy plugin add https://github.com/odessa2/bing-wallpaper-for-omarchy.git --enable
 ```
 
 For local development, clone or copy this folder to
-`~/.config/omarchy/plugins/dev.dlg.bing-wallpaper`, then run:
+`~/.config/omarchy/plugins/io.github.odessa2.bing-wallpaper`, then run:
 
 ```sh
-omarchy plugin validate ~/.config/omarchy/plugins/dev.dlg.bing-wallpaper
+omarchy plugin validate ~/.config/omarchy/plugins/io.github.odessa2.bing-wallpaper
 omarchy-shell shell rescanPlugins
-omarchy plugin enable dev.dlg.bing-wallpaper
+omarchy plugin enable io.github.odessa2.bing-wallpaper
 ```
 
 ## Configure
@@ -43,18 +58,18 @@ Configuration is optional. Copy `config.example.json` to
 ```json
 {
   "market": "auto",
-  "internationalMarket": "en-US",
-  "source": "regional"
+  "setWallpaper": true
 }
 ```
 
-- `market`: `auto` uses the desktop locale, or set a Bing market such as
-  `de-DE`, `en-GB`, or `ja-JP`.
-- `internationalMarket`: the comparison/fallback feed; defaults to `en-US`.
-- `source`: which successfully downloaded image to apply, either `regional` or
-  `international`.
+- `market`: `auto` uses the desktop locale, `global` selects Bing's
+  Rest-of-World feed, or use a market such as `de-DE`, `en-GB`, or `ja-JP`.
+- `setWallpaper`: set to `false` to keep polling and downloading the selected
+  market without changing the system background. The bar panel exposes this as
+  a native toggle.
 
-Changes take effect on the next hourly check. To refresh immediately:
+The bar panel writes this configuration for you and refreshes immediately.
+After a manual file edit, refresh with:
 
 ```sh
 omarchy-shell bing-wallpaper refresh
@@ -66,13 +81,13 @@ Inspect the service state with:
 omarchy-shell bing-wallpaper status
 ```
 
-Image metadata is available in the cache as `regional-current.json` and
-`international-current.json`, including Bing's copyright attribution and link.
+Image metadata is available in the cache as `current.json`, including Bing's
+market, copyright attribution, and link.
 
 ## Remove
 
 ```sh
-omarchy plugin remove dev.dlg.bing-wallpaper
+omarchy plugin remove io.github.odessa2.bing-wallpaper
 rm -r ~/.cache/omarchy/bing-wallpaper ~/.local/state/omarchy/bing-wallpaper
 ```
 
@@ -85,3 +100,7 @@ background is chosen.
 The plugin uses Bing's homepage image archive endpoint:
 `https://www.bing.com/HPImageArchive.aspx`. Bing owns the images and associated
 metadata; this plugin does not grant redistribution rights.
+
+Images are requested from Bing's `_UHD.jpg` asset, which is the highest-quality
+version exposed by the feed. The normal feed URL is used only when a particular
+image has no UHD asset.

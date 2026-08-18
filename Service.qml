@@ -10,6 +10,12 @@ Item {
   property int lastExitCode: -1
   property string lastError: ""
   property string lastRunAt: ""
+  property string market: "auto"
+  property string effectiveMarket: "en-US"
+  property bool setWallpaper: true
+  property var currentImage: null
+  property var pendingConfiguration: null
+  readonly property bool busy: updateProcess.running || configureProcess.running
 
   readonly property string sourceDir: manifest && manifest.__sourceDir
     ? String(manifest.__sourceDir)
@@ -25,6 +31,40 @@ Item {
     updateProcess.running = true
   }
 
+  function configure(nextMarket, nextSetWallpaper) {
+    if (helperPath === "") return
+    market = String(nextMarket)
+    setWallpaper = nextSetWallpaper === true
+    if (configureProcess.running) {
+      pendingConfiguration = { market: market, setWallpaper: setWallpaper }
+      return
+    }
+    runConfiguration(market, setWallpaper)
+  }
+
+  function runConfiguration(nextMarket, nextSetWallpaper) {
+    configureProcess.command = [helperPath, "configure", String(nextMarket), nextSetWallpaper ? "true" : "false"]
+    configureProcess.running = true
+  }
+
+  function loadStatus() {
+    if (helperPath === "" || statusProcess.running) return
+    statusProcess.command = [helperPath, "status"]
+    statusProcess.running = true
+  }
+
+  function applyStatus(raw) {
+    try {
+      var data = JSON.parse(String(raw || "{}"))
+      market = String(data.market || "auto")
+      effectiveMarket = String(data.effectiveMarket || "en-US")
+      setWallpaper = data.setWallpaper !== false
+      currentImage = data.current || null
+    } catch (error) {
+      console.warn("bing-wallpaper: invalid status:", error)
+    }
+  }
+
   Process {
     id: updateProcess
 
@@ -38,6 +78,37 @@ Item {
       root.lastRunAt = new Date().toISOString()
       if (exitCode !== 0 && root.lastError !== "")
         console.warn("bing-wallpaper:", root.lastError)
+      root.loadStatus()
+    }
+  }
+
+  Process {
+    id: configureProcess
+
+    stderr: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.lastError = String(text || "").trim()
+    }
+
+    onExited: function(exitCode) {
+      if (root.pendingConfiguration) {
+        var next = root.pendingConfiguration
+        root.pendingConfiguration = null
+        root.runConfiguration(next.market, next.setWallpaper)
+      } else if (exitCode === 0) {
+        root.refresh()
+      } else if (root.lastError !== "") {
+        console.warn("bing-wallpaper:", root.lastError)
+      }
+    }
+  }
+
+  Process {
+    id: statusProcess
+
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.applyStatus(text)
     }
   }
 
@@ -48,6 +119,8 @@ Item {
     triggeredOnStart: true
     onTriggered: root.refresh()
   }
+
+  onHelperPathChanged: if (helperPath !== "") loadStatus()
 
   IpcHandler {
     target: "bing-wallpaper"
@@ -61,6 +134,11 @@ Item {
     function status(): string {
       return JSON.stringify({
         running: updateProcess.running,
+        configuring: configureProcess.running,
+        market: root.market,
+        effectiveMarket: root.effectiveMarket,
+        setWallpaper: root.setWallpaper,
+        currentImage: root.currentImage,
         lastExitCode: root.lastExitCode,
         lastError: root.lastError,
         lastRunAt: root.lastRunAt

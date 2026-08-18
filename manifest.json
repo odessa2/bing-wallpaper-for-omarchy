@@ -1,15 +1,24 @@
 {
   "schemaVersion": 1,
-  "id": "dev.dlg.bing-wallpaper",
-  "name": "Bing Wallpaper",
+  "id": "io.github.odessa2.bing-wallpaper",
+  "name": "Bing Wallpaper for Omarchy",
   "version": "1.0.0",
   "author": "Daniel Goetz",
   "license": "MIT",
-  "description": "Fetches the current regional and international Bing images and keeps the Omarchy background up to date.",
+  "description": "Fetches the current Bing image for a selected market and keeps the Omarchy background up to date.",
   "kinds": [
-    "service"
+    "service",
+    "bar-widget"
   ],
   "entryPoints": {
-    "service": "Service.qml"
+    "service": "Service.qml",
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "Bing Wallpaper for Omarchy",
+    "description": "Bing image status, region selection, and refresh controls",
+    "category": "System",
+    "allowMultiple": false,
+    "defaultSection": "right"
   }
 }

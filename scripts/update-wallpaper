@@ -2,7 +2,6 @@
 
 set -uo pipefail
 
-PLUGIN_ID="dev.dlg.bing-wallpaper"
 CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
 CACHE_HOME="${XDG_CACHE_HOME:-$HOME/.cache}"
 STATE_HOME="${XDG_STATE_HOME:-$HOME/.local/state}"
@@ -10,9 +9,8 @@ CONFIG_FILE="$CONFIG_HOME/omarchy/bing-wallpaper.json"
 CACHE_DIR="$CACHE_HOME/omarchy/bing-wallpaper"
 STATE_DIR="$STATE_HOME/omarchy/bing-wallpaper"
 LOCK_FILE="$STATE_DIR/update.lock"
-INTERNATIONAL_MARKET="en-US"
-SOURCE="regional"
-REGIONAL_MARKET="auto"
+SELECTED_MARKET="auto"
+SET_WALLPAPER="true"
 
 log() {
   printf 'bing-wallpaper: %s\n' "$*" >&2
@@ -40,7 +38,7 @@ locale_market() {
   done
 
   if [[ -z $locale_name ]]; then
-    printf '%s\n' "$INTERNATIONAL_MARKET"
+    printf '%s\n' "en-US"
     return
   fi
 
@@ -56,32 +54,77 @@ read_config() {
     return 1
   }
 
-  REGIONAL_MARKET=$(jq -r '.market // "auto"' "$CONFIG_FILE")
-  INTERNATIONAL_MARKET=$(jq -r '.internationalMarket // "en-US"' "$CONFIG_FILE")
-  SOURCE=$(jq -r '.source // "regional"' "$CONFIG_FILE")
+  SELECTED_MARKET=$(jq -r '.market // "auto"' "$CONFIG_FILE")
+  SET_WALLPAPER=$(jq -r '.setWallpaper // true' "$CONFIG_FILE")
 
-  [[ $SOURCE == "regional" || $SOURCE == "international" ]] || {
-    log "source must be regional or international in $CONFIG_FILE"
+  [[ $SET_WALLPAPER == "true" || $SET_WALLPAPER == "false" ]] || {
+    log "setWallpaper must be true or false in $CONFIG_FILE"
     return 1
   }
 
-  if [[ $REGIONAL_MARKET != "auto" && ! $REGIONAL_MARKET =~ ^[a-z]{2}-[A-Z]{2}$ ]]; then
-    log "market must be auto or a value such as de-DE in $CONFIG_FILE"
+  if [[ $SELECTED_MARKET != "auto" && $SELECTED_MARKET != "global" && ! $SELECTED_MARKET =~ ^[a-z]{2}-[A-Z]{2}$ ]]; then
+    log "market must be auto, global, or a value such as de-DE in $CONFIG_FILE"
     return 1
   fi
 
-  [[ $INTERNATIONAL_MARKET =~ ^[a-z]{2}-[A-Z]{2}$ ]] || {
-    log "internationalMarket must be a value such as en-US in $CONFIG_FILE"
+}
+
+write_config() {
+  local market="${1:-}"
+  local set_wallpaper="${2:-}"
+
+  [[ $market == "auto" || $market == "global" || $market =~ ^[a-z]{2}-[A-Z]{2}$ ]] || {
+    log "market must be auto, global, or a value such as de-DE"
     return 1
   }
+  [[ $set_wallpaper == "true" || $set_wallpaper == "false" ]] || {
+    log "setWallpaper must be true or false"
+    return 1
+  }
+
+  mkdir -p "$(dirname "$CONFIG_FILE")"
+  jq -n \
+    --arg market "$market" \
+    --argjson setWallpaper "$set_wallpaper" \
+    '{market: $market, setWallpaper: $setWallpaper}' \
+    >"$CONFIG_FILE.tmp" \
+    && mv "$CONFIG_FILE.tmp" "$CONFIG_FILE"
+}
+
+print_status() {
+  local effective_market
+  local current_json='null'
+
+  read_config || return 1
+  effective_market="$SELECTED_MARKET"
+  [[ $effective_market != "auto" ]] || effective_market=$(locale_market)
+  [[ ! -f $CACHE_DIR/current.json ]] \
+    || current_json=$(jq -c '.' "$CACHE_DIR/current.json")
+
+  jq -n \
+    --arg market "$SELECTED_MARKET" \
+    --arg effectiveMarket "$effective_market" \
+    --argjson setWallpaper "$SET_WALLPAPER" \
+    --argjson current "$current_json" \
+    '{market: $market, effectiveMarket: $effectiveMarket,
+      setWallpaper: $setWallpaper,
+      current: $current}'
 }
 
 fetch_market() {
-  local label="$1"
-  local market="$2"
-  local response_file image_url start_date image_hash image_file metadata_file temp_file
+  local market="$1"
+  local response_file image_url fallback_url url_base start_date image_hash image_file metadata_file temp_file
+  local request_market="$market"
+  local request_language="${market:0:2}"
+  local request_country="${market:3:2}"
 
-  response_file=$(mktemp "$CACHE_DIR/.${label}-response.XXXXXX") || return 1
+  if [[ $market == "global" ]]; then
+    request_market="en-ROW"
+    request_language="en"
+    request_country="RU"
+  fi
+
+  response_file=$(mktemp "$CACHE_DIR/.response.XXXXXX") || return 1
   if ! curl --fail --silent --show-error --location \
     --retry 3 --connect-timeout 15 --max-time 90 \
     --get 'https://www.bing.com/HPImageArchive.aspx' \
@@ -89,57 +132,73 @@ fetch_market() {
     --data-urlencode 'idx=0' \
     --data-urlencode 'n=1' \
     --data-urlencode 'uhd=1' \
-    --data-urlencode "mkt=$market" \
+    --data-urlencode "mkt=$request_market" \
+    --data-urlencode "setlang=$request_language" \
+    --data-urlencode "cc=$request_country" \
     --output "$response_file"; then
-    log "could not fetch the $label feed for $market"
+    log "could not fetch the Bing feed for $market"
     rm -f "$response_file"
     return 1
   fi
 
   if ! jq -e '.images | type == "array" and length > 0' "$response_file" >/dev/null 2>&1; then
-    log "Bing returned an invalid $label feed for $market"
+    log "Bing returned an invalid feed for $market"
     rm -f "$response_file"
     return 1
   fi
 
-  image_url=$(jq -r '.images[0].url // empty' "$response_file")
+  fallback_url=$(jq -r '.images[0].url // empty' "$response_file")
+  url_base=$(jq -r '.images[0].urlbase // empty' "$response_file")
   start_date=$(jq -r '.images[0].startdate // empty' "$response_file")
   image_hash=$(jq -r '.images[0].hsh // empty' "$response_file")
-  [[ -n $image_url && $start_date =~ ^[0-9]{8}$ ]] || {
-    log "the $label feed is missing its image URL or date"
+  [[ -n $fallback_url && $start_date =~ ^[0-9]{8}$ ]] || {
+    log "the Bing feed is missing its image URL or date"
     rm -f "$response_file"
     return 1
   }
 
-  [[ $image_url == http://* || $image_url == https://* ]] \
-    || image_url="https://www.bing.com$image_url"
+  [[ $fallback_url == http://* || $fallback_url == https://* ]] \
+    || fallback_url="https://www.bing.com$fallback_url"
+  if [[ -n $url_base ]]; then
+    [[ $url_base == http://* || $url_base == https://* ]] \
+      && image_url="${url_base}_UHD.jpg" \
+      || image_url="https://www.bing.com${url_base}_UHD.jpg"
+  else
+    image_url="$fallback_url"
+  fi
   [[ -n $image_hash ]] || image_hash=$(printf '%s' "$image_url" | sha256sum | cut -c1-16)
 
-  image_file="$CACHE_DIR/${label}-${start_date}-${image_hash}.jpg"
-  metadata_file="$CACHE_DIR/${label}-current.json"
+  image_file="$CACHE_DIR/${market}-${start_date}-${image_hash}.jpg"
+  metadata_file="$CACHE_DIR/current.json"
 
   if [[ ! -s $image_file ]]; then
-    temp_file=$(mktemp "$CACHE_DIR/.${label}-image.XXXXXX") || {
+    temp_file=$(mktemp "$CACHE_DIR/.image.XXXXXX") || {
       rm -f "$response_file"
       return 1
     }
-    if ! curl --fail --silent --show-error --location \
+    if ! curl --fail --silent --location \
       --retry 3 --connect-timeout 15 --max-time 180 \
       --output "$temp_file" "$image_url"; then
-      log "could not download the $label image for $market"
-      rm -f "$response_file" "$temp_file"
-      return 1
+      if [[ $image_url == "$fallback_url" ]] \
+        || ! curl --fail --silent --show-error --location \
+          --retry 3 --connect-timeout 15 --max-time 180 \
+          --output "$temp_file" "$fallback_url"; then
+        log "could not download the Bing image for $market"
+        rm -f "$response_file" "$temp_file"
+        return 1
+      fi
+      image_url="$fallback_url"
     fi
     if [[ ! -s $temp_file ]]; then
-      log "Bing returned an empty $label image for $market"
+      log "Bing returned an empty image for $market"
       rm -f "$response_file" "$temp_file"
       return 1
     fi
     mv "$temp_file" "$image_file"
   fi
 
-  jq --arg market "$market" --arg source "$label" --arg path "$image_file" \
-    '.images[0] + {market: $market, source: $source, localPath: $path}' \
+  jq --arg market "$market" --arg path "$image_file" --arg imageUrl "$image_url" \
+    '.images[0] + {market: $market, localPath: $path, downloadedUrl: $imageUrl}' \
     "$response_file" >"$metadata_file.tmp" \
     && mv "$metadata_file.tmp" "$metadata_file"
   rm -f "$response_file"
@@ -147,16 +206,16 @@ fetch_market() {
 }
 
 prune_cache() {
-  local label="$1"
+  local market="$1"
   mapfile -t old_files < <(
-    find "$CACHE_DIR" -maxdepth 1 -type f -name "${label}-*.jpg" -printf '%T@ %p\n' \
+    find "$CACHE_DIR" -maxdepth 1 -type f -name "${market}-*.jpg" -printf '%T@ %p\n' \
       | sort -rn | tail -n +9 | cut -d' ' -f2-
   )
   ((${#old_files[@]} == 0)) || rm -f -- "${old_files[@]}"
 }
 
 main() {
-  local regional_image="" international_image="" selected_image=""
+  local selected_image=""
 
   require_command curl || return 1
   require_command jq || return 1
@@ -168,38 +227,37 @@ main() {
   flock -n 9 || return 0
 
   read_config || return 1
-  [[ $REGIONAL_MARKET != "auto" ]] || REGIONAL_MARKET=$(locale_market)
+  [[ $SELECTED_MARKET != "auto" ]] || SELECTED_MARKET=$(locale_market)
 
-  regional_image=$(fetch_market regional "$REGIONAL_MARKET") || true
-  if [[ $INTERNATIONAL_MARKET == "$REGIONAL_MARKET" ]]; then
-    international_image="$regional_image"
-    if [[ -n $regional_image ]]; then
-      jq '.source = "international"' "$CACHE_DIR/regional-current.json" \
-        >"$CACHE_DIR/international-current.json.tmp" \
-        && mv "$CACHE_DIR/international-current.json.tmp" "$CACHE_DIR/international-current.json"
-    fi
-  else
-    international_image=$(fetch_market international "$INTERNATIONAL_MARKET") || true
-  fi
-
-  if [[ $SOURCE == "international" ]]; then
-    selected_image="${international_image:-$regional_image}"
-  else
-    selected_image="${regional_image:-$international_image}"
-  fi
+  selected_image=$(fetch_market "$SELECTED_MARKET") || true
 
   [[ -n $selected_image && -s $selected_image ]] || {
-    log "neither the regional nor international image could be retrieved"
+    log "the image for $SELECTED_MARKET could not be retrieved"
     return 1
   }
 
-  current_background=$(realpath "$STATE_HOME/omarchy/current/background" 2>/dev/null || true)
-  if [[ $current_background != "$selected_image" ]]; then
-    omarchy theme bg set "$selected_image"
+  if [[ $SET_WALLPAPER == "true" ]]; then
+    current_background=$(realpath "$STATE_HOME/omarchy/current/background" 2>/dev/null || true)
+    if [[ $current_background != "$selected_image" ]]; then
+      omarchy theme bg set "$selected_image"
+    fi
   fi
 
-  prune_cache regional
-  prune_cache international
+  prune_cache "$SELECTED_MARKET"
 }
 
-main "$@"
+case "${1:-update}" in
+  update)
+    main
+    ;;
+  configure)
+    require_command jq && read_config && write_config "${2:-}" "${3:-}"
+    ;;
+  status)
+    require_command jq && print_status
+    ;;
+  *)
+    log "usage: update-wallpaper [update|status|configure <market> <set-wallpaper>]"
+    exit 2
+    ;;
+esac
