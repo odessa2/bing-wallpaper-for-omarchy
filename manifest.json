@@ -5,7 +5,7 @@
   "version": "1.0.0",
   "author": "Daniel Goetz",
   "license": "MIT",
-  "description": "Downloads Bing's current image for one selected market hourly and optionally sets it as the Omarchy background.",
+  "description": "Automatically downloads the current Bing homepage image for a configurable market every hour, with an optional download-only mode and native Omarchy bar controls.",
   "kinds": [
     "service",
     "bar-widget"
