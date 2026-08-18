@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "id": "dev.dlg.bing-wallpaper",
+  "name": "Bing Wallpaper",
+  "version": "1.0.0",
+  "author": "Daniel Goetz",
+  "license": "MIT",
+  "description": "Fetches the current regional and international Bing images and keeps the Omarchy background up to date.",
+  "kinds": [
+    "service"
+  ],
+  "entryPoints": {
+    "service": "Service.qml"
+  }
+}

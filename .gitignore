@@ -1,0 +1,5 @@
+*.tmp
+.qmllint.ini
+.agents/
+.codex/
+bingWP

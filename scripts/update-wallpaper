@@ -1,0 +1,205 @@
+#!/bin/bash
+
+set -uo pipefail
+
+PLUGIN_ID="dev.dlg.bing-wallpaper"
+CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
+CACHE_HOME="${XDG_CACHE_HOME:-$HOME/.cache}"
+STATE_HOME="${XDG_STATE_HOME:-$HOME/.local/state}"
+CONFIG_FILE="$CONFIG_HOME/omarchy/bing-wallpaper.json"
+CACHE_DIR="$CACHE_HOME/omarchy/bing-wallpaper"
+STATE_DIR="$STATE_HOME/omarchy/bing-wallpaper"
+LOCK_FILE="$STATE_DIR/update.lock"
+INTERNATIONAL_MARKET="en-US"
+SOURCE="regional"
+REGIONAL_MARKET="auto"
+
+log() {
+  printf 'bing-wallpaper: %s\n' "$*" >&2
+}
+
+require_command() {
+  command -v "$1" >/dev/null 2>&1 || {
+    log "required command not found: $1"
+    return 1
+  }
+}
+
+locale_market() {
+  local locale_name=""
+  local candidate
+
+  for candidate in "${LC_ALL:-}" "${LC_MESSAGES:-}" "${LANG:-}"; do
+    candidate="${candidate%%.*}"
+    candidate="${candidate%%@*}"
+    candidate="${candidate/_/-}"
+    if [[ $candidate =~ ^[a-zA-Z]{2}-[a-zA-Z]{2}$ ]]; then
+      locale_name="$candidate"
+      break
+    fi
+  done
+
+  if [[ -z $locale_name ]]; then
+    printf '%s\n' "$INTERNATIONAL_MARKET"
+    return
+  fi
+
+  printf '%s-%s\n' "${locale_name:0:2}" "${locale_name:3:2}" \
+    | awk -F- '{ print tolower($1) "-" toupper($2) }'
+}
+
+read_config() {
+  [[ -f $CONFIG_FILE ]] || return 0
+
+  jq -e 'type == "object"' "$CONFIG_FILE" >/dev/null 2>&1 || {
+    log "invalid JSON object in $CONFIG_FILE"
+    return 1
+  }
+
+  REGIONAL_MARKET=$(jq -r '.market // "auto"' "$CONFIG_FILE")
+  INTERNATIONAL_MARKET=$(jq -r '.internationalMarket // "en-US"' "$CONFIG_FILE")
+  SOURCE=$(jq -r '.source // "regional"' "$CONFIG_FILE")
+
+  [[ $SOURCE == "regional" || $SOURCE == "international" ]] || {
+    log "source must be regional or international in $CONFIG_FILE"
+    return 1
+  }
+
+  if [[ $REGIONAL_MARKET != "auto" && ! $REGIONAL_MARKET =~ ^[a-z]{2}-[A-Z]{2}$ ]]; then
+    log "market must be auto or a value such as de-DE in $CONFIG_FILE"
+    return 1
+  fi
+
+  [[ $INTERNATIONAL_MARKET =~ ^[a-z]{2}-[A-Z]{2}$ ]] || {
+    log "internationalMarket must be a value such as en-US in $CONFIG_FILE"
+    return 1
+  }
+}
+
+fetch_market() {
+  local label="$1"
+  local market="$2"
+  local response_file image_url start_date image_hash image_file metadata_file temp_file
+
+  response_file=$(mktemp "$CACHE_DIR/.${label}-response.XXXXXX") || return 1
+  if ! curl --fail --silent --show-error --location \
+    --retry 3 --connect-timeout 15 --max-time 90 \
+    --get 'https://www.bing.com/HPImageArchive.aspx' \
+    --data-urlencode 'format=js' \
+    --data-urlencode 'idx=0' \
+    --data-urlencode 'n=1' \
+    --data-urlencode 'uhd=1' \
+    --data-urlencode "mkt=$market" \
+    --output "$response_file"; then
+    log "could not fetch the $label feed for $market"
+    rm -f "$response_file"
+    return 1
+  fi
+
+  if ! jq -e '.images | type == "array" and length > 0' "$response_file" >/dev/null 2>&1; then
+    log "Bing returned an invalid $label feed for $market"
+    rm -f "$response_file"
+    return 1
+  fi
+
+  image_url=$(jq -r '.images[0].url // empty' "$response_file")
+  start_date=$(jq -r '.images[0].startdate // empty' "$response_file")
+  image_hash=$(jq -r '.images[0].hsh // empty' "$response_file")
+  [[ -n $image_url && $start_date =~ ^[0-9]{8}$ ]] || {
+    log "the $label feed is missing its image URL or date"
+    rm -f "$response_file"
+    return 1
+  }
+
+  [[ $image_url == http://* || $image_url == https://* ]] \
+    || image_url="https://www.bing.com$image_url"
+  [[ -n $image_hash ]] || image_hash=$(printf '%s' "$image_url" | sha256sum | cut -c1-16)
+
+  image_file="$CACHE_DIR/${label}-${start_date}-${image_hash}.jpg"
+  metadata_file="$CACHE_DIR/${label}-current.json"
+
+  if [[ ! -s $image_file ]]; then
+    temp_file=$(mktemp "$CACHE_DIR/.${label}-image.XXXXXX") || {
+      rm -f "$response_file"
+      return 1
+    }
+    if ! curl --fail --silent --show-error --location \
+      --retry 3 --connect-timeout 15 --max-time 180 \
+      --output "$temp_file" "$image_url"; then
+      log "could not download the $label image for $market"
+      rm -f "$response_file" "$temp_file"
+      return 1
+    fi
+    if [[ ! -s $temp_file ]]; then
+      log "Bing returned an empty $label image for $market"
+      rm -f "$response_file" "$temp_file"
+      return 1
+    fi
+    mv "$temp_file" "$image_file"
+  fi
+
+  jq --arg market "$market" --arg source "$label" --arg path "$image_file" \
+    '.images[0] + {market: $market, source: $source, localPath: $path}' \
+    "$response_file" >"$metadata_file.tmp" \
+    && mv "$metadata_file.tmp" "$metadata_file"
+  rm -f "$response_file"
+  printf '%s\n' "$image_file"
+}
+
+prune_cache() {
+  local label="$1"
+  mapfile -t old_files < <(
+    find "$CACHE_DIR" -maxdepth 1 -type f -name "${label}-*.jpg" -printf '%T@ %p\n' \
+      | sort -rn | tail -n +9 | cut -d' ' -f2-
+  )
+  ((${#old_files[@]} == 0)) || rm -f -- "${old_files[@]}"
+}
+
+main() {
+  local regional_image="" international_image="" selected_image=""
+
+  require_command curl || return 1
+  require_command jq || return 1
+  require_command flock || return 1
+  require_command omarchy || return 1
+
+  mkdir -p "$CACHE_DIR" "$STATE_DIR"
+  exec 9>"$LOCK_FILE"
+  flock -n 9 || return 0
+
+  read_config || return 1
+  [[ $REGIONAL_MARKET != "auto" ]] || REGIONAL_MARKET=$(locale_market)
+
+  regional_image=$(fetch_market regional "$REGIONAL_MARKET") || true
+  if [[ $INTERNATIONAL_MARKET == "$REGIONAL_MARKET" ]]; then
+    international_image="$regional_image"
+    if [[ -n $regional_image ]]; then
+      jq '.source = "international"' "$CACHE_DIR/regional-current.json" \
+        >"$CACHE_DIR/international-current.json.tmp" \
+        && mv "$CACHE_DIR/international-current.json.tmp" "$CACHE_DIR/international-current.json"
+    fi
+  else
+    international_image=$(fetch_market international "$INTERNATIONAL_MARKET") || true
+  fi
+
+  if [[ $SOURCE == "international" ]]; then
+    selected_image="${international_image:-$regional_image}"
+  else
+    selected_image="${regional_image:-$international_image}"
+  fi
+
+  [[ -n $selected_image && -s $selected_image ]] || {
+    log "neither the regional nor international image could be retrieved"
+    return 1
+  }
+
+  current_background=$(realpath "$STATE_HOME/omarchy/current/background" 2>/dev/null || true)
+  if [[ $current_background != "$selected_image" ]]; then
+    omarchy theme bg set "$selected_image"
+  fi
+
+  prune_cache regional
+  prune_cache international
+}
+
+main "$@"
