@@ -10,6 +10,8 @@ unchanged images are reused, and the cache retains the eight most recent images
 for each market you have selected. Only the currently selected market is
 requested and downloaded during a check.
 
+![Bing Wallpaper for Omarchy bar widget settings](preview.png)
+
 ## Requirements
 
 - Omarchy 4 / Quattro
