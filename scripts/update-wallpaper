@@ -55,7 +55,7 @@ read_config() {
   }
 
   SELECTED_MARKET=$(jq -r '.market // "auto"' "$CONFIG_FILE")
-  SET_WALLPAPER=$(jq -r '.setWallpaper // true' "$CONFIG_FILE")
+  SET_WALLPAPER=$(jq -r 'if has("setWallpaper") then .setWallpaper else true end' "$CONFIG_FILE")
 
   [[ $SET_WALLPAPER == "true" || $SET_WALLPAPER == "false" ]] || {
     log "setWallpaper must be true or false in $CONFIG_FILE"
@@ -251,7 +251,12 @@ case "${1:-update}" in
     main
     ;;
   configure)
-    require_command jq && read_config && write_config "${2:-}" "${3:-}"
+    require_command jq && read_config || exit 1
+    next_market="${2:--}"
+    next_set_wallpaper="${3:--}"
+    [[ $next_market != "-" ]] || next_market="$SELECTED_MARKET"
+    [[ $next_set_wallpaper != "-" ]] || next_set_wallpaper="$SET_WALLPAPER"
+    write_config "$next_market" "$next_set_wallpaper"
     ;;
   status)
     require_command jq && print_status

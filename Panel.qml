@@ -46,10 +46,6 @@ Panel {
     return false
   }
 
-  function save(nextMarket, nextSetWallpaper) {
-    if (service) service.configure(nextMarket, nextSetWallpaper)
-  }
-
   KeyboardPanel {
     id: panel
     anchorItem: root.anchorItem
@@ -129,9 +125,9 @@ Panel {
           foreground: root.foreground
           fontFamily: root.fontFamily
           options: root.marketOptions
-          value: service ? service.market : "auto"
+          value: root.service ? root.service.market : "auto"
           onChanged: function(value) {
-            root.save(value, service ? service.setWallpaper : true)
+            if (root.service) root.service.configure(value, null)
           }
         }
 
@@ -139,10 +135,10 @@ Panel {
           width: parent.width
           label: "Set as wallpaper"
           description: "Turn off to keep downloading the selected market without changing the desktop."
-          checked: service ? service.setWallpaper : true
+          checked: root.service ? root.service.setWallpaper : true
           foreground: root.foreground
           fontFamily: root.fontFamily
-          onClicked: if (service) service.toggleSetWallpaper()
+          onClicked: if (root.service) root.service.toggleSetWallpaper()
         }
 
         Row {

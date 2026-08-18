@@ -36,21 +36,33 @@ Item {
   function configure(nextMarket, nextSetWallpaper) {
     if (helperPath === "") return
     configurationRevision += 1
-    market = String(nextMarket)
-    setWallpaper = nextSetWallpaper === true
+    var changesMarket = nextMarket !== null && nextMarket !== undefined
+    var changesSetWallpaper = nextSetWallpaper !== null && nextSetWallpaper !== undefined
+    if (changesMarket) market = String(nextMarket)
+    if (changesSetWallpaper) setWallpaper = nextSetWallpaper === true
     if (configureProcess.running) {
-      pendingConfiguration = { market: market, setWallpaper: setWallpaper }
+      pendingConfiguration = {
+        market: changesMarket ? market : null,
+        setWallpaper: changesSetWallpaper ? setWallpaper : null
+      }
       return
     }
-    runConfiguration(market, setWallpaper)
+    runConfiguration(
+      changesMarket ? market : null,
+      changesSetWallpaper ? setWallpaper : null)
   }
 
   function toggleSetWallpaper() {
-    configure(market, !setWallpaper)
+    configure(null, !setWallpaper)
   }
 
   function runConfiguration(nextMarket, nextSetWallpaper) {
-    configureProcess.command = [helperPath, "configure", String(nextMarket), nextSetWallpaper ? "true" : "false"]
+    configureProcess.command = [
+      helperPath,
+      "configure",
+      nextMarket === null ? "-" : String(nextMarket),
+      nextSetWallpaper === null ? "-" : (nextSetWallpaper ? "true" : "false")
+    ]
     configureProcess.running = true
   }
 
