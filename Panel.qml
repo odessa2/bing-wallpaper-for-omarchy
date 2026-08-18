@@ -142,9 +142,7 @@ Panel {
           checked: service ? service.setWallpaper : true
           foreground: root.foreground
           fontFamily: root.fontFamily
-          onClicked: root.save(
-            service ? service.market : "auto",
-            !checked)
+          onClicked: if (service) service.toggleSetWallpaper()
         }
 
         Row {

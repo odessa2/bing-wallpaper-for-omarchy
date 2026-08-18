@@ -45,6 +45,10 @@ Item {
     runConfiguration(market, setWallpaper)
   }
 
+  function toggleSetWallpaper() {
+    configure(market, !setWallpaper)
+  }
+
   function runConfiguration(nextMarket, nextSetWallpaper) {
     configureProcess.command = [helperPath, "configure", String(nextMarket), nextSetWallpaper ? "true" : "false"]
     configureProcess.running = true
