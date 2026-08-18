@@ -22,6 +22,7 @@ Item {
   property string legacyMarket: "auto"
   property bool legacySetWallpaper: true
   property string legacyStatusText: ""
+  property bool refreshPending: false
   readonly property bool busy: updateProcess.running
 
   readonly property string sourceDir: manifest && manifest.__sourceDir
@@ -141,7 +142,11 @@ Item {
   }
 
   function refresh() {
-    if (helperPath === "" || !settingsReady || updateProcess.running) return
+    if (helperPath === "" || !settingsReady) return
+    if (updateProcess.running) {
+      refreshPending = true
+      return
+    }
     lastError = ""
     updateProcess.command = [
       helperPath,
@@ -186,7 +191,12 @@ Item {
       root.lastRunAt = new Date().toISOString()
       if (exitCode !== 0 && root.lastError !== "")
         console.warn("bing-wallpaper:", root.lastError)
-      root.loadStatus()
+      if (root.refreshPending) {
+        root.refreshPending = false
+        root.refresh()
+      } else {
+        root.loadStatus()
+      }
     }
   }
 
@@ -249,6 +259,7 @@ Item {
     function status(): string {
       return JSON.stringify({
         running: updateProcess.running,
+        refreshPending: root.refreshPending,
         market: root.market,
         effectiveMarket: root.effectiveMarket,
         setWallpaper: root.setWallpaper,
