@@ -138,7 +138,7 @@ Panel {
         Toggle {
           width: parent.width
           label: "Set as wallpaper"
-          description: "Turn off to keep downloading both images without changing the desktop."
+          description: "Turn off to keep downloading the selected market without changing the desktop."
           checked: service ? service.setWallpaper : true
           foreground: root.foreground
           fontFamily: root.fontFamily

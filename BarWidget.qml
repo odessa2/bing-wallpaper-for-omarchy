@@ -1,6 +1,5 @@
 import QtQuick
 import Quickshell
-import Quickshell.Io
 import qs.Ui
 
 BarWidget {
@@ -49,18 +48,11 @@ BarWidget {
     }
   }
 
-  IpcHandler {
-    target: "bing-wallpaper-widget"
-    function open(): void { root.open() }
-    function close(): void { root.close() }
-    function toggle(): void { root.toggle() }
-  }
-
-  WidgetButton {
+  BarIconButton {
     id: button
     anchors.fill: parent
     bar: root.bar
-    text: root.vertical ? "B" : "Bing"
+    text: "\uf1c5"
     active: root.service ? root.service.busy : false
     tooltipText: root.service && root.service.currentImage
       ? String(root.service.currentImage.copyright || "Bing Wallpaper for Omarchy")

@@ -21,8 +21,8 @@ feed and stores images under `~/.cache/omarchy/bing-wallpaper/`.
 
 ## Bar widget
 
-Enable the plugin to place its native widget in the right section of the
-Omarchy bar. Left-click it to open a panel with:
+Enable the plugin to place its native image icon in the right section of the
+Omarchy bar. Left-click the image icon to open a panel with:
 
 - A preview and Bing's image attribution
 - Market selection, including Bing's Global / Rest-of-World feed
@@ -32,6 +32,11 @@ Omarchy bar. Left-click it to open a panel with:
 Right-click the bar widget to refresh immediately. With **Set as wallpaper**
 off, hourly polling and download of the selected market continue but the
 desktop is not changed.
+
+The icon inherits Omarchy's bar foreground color. For a transparent bar,
+Omarchy automatically chooses between the theme's text and background colors
+after the wallpaper changes. Double-click an empty part of the bar to toggle
+transparency globally if a visually busy wallpaper still hurts readability.
 
 ## Install
 
