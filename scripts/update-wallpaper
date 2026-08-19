@@ -190,14 +190,16 @@ validated_bing_url() {
   printf '%s%s\n' "$BING_ORIGIN" "$path"
 }
 
-limited_curl() {
+limited_curl() (
   local max_bytes="$1"
   shift
   local max_blocks=$((max_bytes / 1024 + 1))
-  ulimit -f "$max_blocks" || return 1
+  # Keep the transfer cap local to this invocation and leave the inherited
+  # hard limit untouched so a later, larger transfer can set its own cap.
+  ulimit -Sf "$max_blocks" || return 1
   curl --disable --proto '=https' --proto-redir '=https' --globoff \
     --fail --silent --show-error --max-filesize "$max_bytes" "$@"
-}
+)
 
 download_feed() {
   local market="$1"

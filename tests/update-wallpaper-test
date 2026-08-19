@@ -21,7 +21,7 @@ for ((i = 1; i <= $#; i++)); do
     --write-out) i=$((i + 1)); writeout="${!i}" ;;
   esac
 done
-printf '%s\n' "$*" >>"$FAKE_CURL_LOG"
+printf 'soft=%s hard=%s %s\n' "$(ulimit -Sf)" "$(ulimit -Hf)" "$*" >>"$FAKE_CURL_LOG"
 if [[ $* == *HPImageArchive.aspx* ]]; then
   printf '%s' "$FAKE_FEED" >"$output"
   [[ $writeout == '%{http_code}' ]] && printf '200'
@@ -69,6 +69,15 @@ run_update() {
 
 reset_case
 run_update '{"images":[{"url":"/th?id=OHR.Test_1920x1080.jpg","urlbase":"/th?id=OHR.Test","startdate":"20260819","title":"Test","copyright":"Test"}]}'
+mapfile -t curl_calls <"$FAKE_CURL_LOG"
+[[ ${#curl_calls[@]} == 2 ]]
+[[ ${curl_calls[0]} == soft=1025\ * ]]
+[[ ${curl_calls[1]} == soft=65537\ * ]]
+feed_hard="${curl_calls[0]#* hard=}"
+feed_hard="${feed_hard%% *}"
+image_hard="${curl_calls[1]#* hard=}"
+image_hard="${image_hard%% *}"
+[[ $feed_hard == "$image_hard" ]]
 [[ $(find "$XDG_CACHE_HOME/omarchy/bing-wallpaper" -maxdepth 1 -name '*.jpg' -type f | wc -l) == 1 ]]
 jq -e '.market == "en-US" and (.downloadedUrl | startswith("https://www.bing.com/"))' \
   "$XDG_CACHE_HOME/omarchy/bing-wallpaper/current.json" >/dev/null

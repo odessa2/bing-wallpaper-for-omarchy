@@ -158,7 +158,8 @@ version exposed by the feed. The normal feed URL is used only when a particular
 image has no UHD asset.
 
 For safety, the downloader accepts only Bing-relative image paths, does not
-follow redirects, limits response sizes, and validates that downloaded bytes
+follow redirects, applies isolated per-transfer response-size limits without
+lowering the shell's hard file-size limit, and validates that downloaded bytes
 decode as a JPEG before caching or applying them as the wallpaper.
 Bing-provided titles and copyright attribution are rendered explicitly as
 plain text. They are never interpreted as rich text or used as tooltip markup,
