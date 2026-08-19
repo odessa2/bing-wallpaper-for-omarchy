@@ -1,6 +1,14 @@
 #!/bin/bash
 
 set -uo pipefail
+umask 077
+
+readonly BING_ORIGIN="https://www.bing.com"
+readonly BING_FEED_URL="$BING_ORIGIN/HPImageArchive.aspx"
+readonly MAX_FEED_BYTES=1048576
+readonly MAX_IMAGE_BYTES=67108864
+readonly MAX_IMAGE_DIMENSION=16384
+readonly MAX_IMAGE_PIXELS=100000000
 
 CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
 CACHE_HOME="${XDG_CACHE_HOME:-$HOME/.cache}"
@@ -12,10 +20,24 @@ LOCK_FILE="$STATE_DIR/update.lock"
 SELECTED_MARKET="auto"
 SET_WALLPAPER="true"
 LEGACY_CONFIG_FOUND="false"
+FETCHED_IMAGE=""
+TEMP_FILES=()
 
 log() {
   printf 'bing-wallpaper: %s\n' "$*" >&2
 }
+
+cleanup() {
+  local path
+  for path in "${TEMP_FILES[@]}"; do
+    [[ -n $path ]] && rm -f -- "$path"
+  done
+}
+
+trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 require_command() {
   command -v "$1" >/dev/null 2>&1 || {
@@ -24,9 +46,39 @@ require_command() {
   }
 }
 
+validate_base_path() {
+  local path="$1"
+  [[ $path == /* && $path != *$'\n'* && $path != *$'\r'* ]] || {
+    log "XDG paths must be absolute and contain no newlines"
+    return 1
+  }
+}
+
+validate_paths() {
+  validate_base_path "$CONFIG_HOME" || return 1
+  validate_base_path "$CACHE_HOME" || return 1
+  validate_base_path "$STATE_HOME" || return 1
+}
+
+ensure_private_directory() {
+  local path="$1"
+  [[ ! -L $path && (! -e $path || -d $path) ]] || {
+    log "refusing to use non-directory or symlink: $path"
+    return 1
+  }
+  mkdir -p -- "$path" || {
+    log "could not create directory: $path"
+    return 1
+  }
+  chmod 700 -- "$path" || {
+    log "could not secure directory: $path"
+    return 1
+  }
+}
+
 locale_market() {
   local locale_name=""
-  local candidate
+  local candidate language country
 
   for candidate in "${LC_ALL:-}" "${LC_MESSAGES:-}" "${LANG:-}"; do
     candidate="${candidate%%.*}"
@@ -43,8 +95,9 @@ locale_market() {
     return
   fi
 
-  printf '%s-%s\n' "${locale_name:0:2}" "${locale_name:3:2}" \
-    | awk -F- '{ print tolower($1) "-" toupper($2) }'
+  language="${locale_name:0:2}"
+  country="${locale_name:3:2}"
+  printf '%s-%s\n' "${language,,}" "${country^^}"
 }
 
 validate_settings() {
@@ -68,13 +121,21 @@ load_settings() {
 read_legacy_config() {
   [[ -f $CONFIG_FILE ]] || return 0
 
-  jq -e 'type == "object"' "$CONFIG_FILE" >/dev/null 2>&1 || {
-    log "invalid JSON object in $CONFIG_FILE"
+  local settings
+  settings=$(jq -er '
+    if type != "object" then error("configuration must be an object") else
+      (.market // "auto") as $market |
+      (if has("setWallpaper") then .setWallpaper else true end) as $wallpaper |
+      if ($market | type) != "string" or ($wallpaper | type) != "boolean" then
+        error("market must be a string and setWallpaper must be a boolean")
+      else
+        [$market, ($wallpaper | tostring)] | @tsv
+      end
+    end' "$CONFIG_FILE") || {
+    log "invalid legacy configuration in $CONFIG_FILE"
     return 1
   }
-
-  SELECTED_MARKET=$(jq -r '.market // "auto"' "$CONFIG_FILE")
-  SET_WALLPAPER=$(jq -r 'if has("setWallpaper") then .setWallpaper else true end' "$CONFIG_FILE")
+  IFS=$'\t' read -r SELECTED_MARKET SET_WALLPAPER <<<"$settings"
   LEGACY_CONFIG_FOUND="true"
   validate_settings || {
     log "invalid legacy configuration in $CONFIG_FILE"
@@ -88,8 +149,17 @@ print_status() {
 
   effective_market="$SELECTED_MARKET"
   [[ $effective_market != "auto" ]] || effective_market=$(locale_market)
-  [[ ! -f $CACHE_DIR/current.json ]] \
-    || current_json=$(jq -c '.' "$CACHE_DIR/current.json")
+  if [[ -e $CACHE_DIR/current.json ]]; then
+    [[ -f $CACHE_DIR/current.json && ! -L $CACHE_DIR/current.json ]] || {
+      log "refusing to read an unexpected current.json file"
+      return 1
+    }
+    jq -e 'type == "object"' "$CACHE_DIR/current.json" >/dev/null || {
+      log "invalid metadata in $CACHE_DIR/current.json"
+      return 1
+    }
+    current_json=$(jq -c '.' "$CACHE_DIR/current.json") || return 1
+  fi
 
   jq -n \
     --arg market "$SELECTED_MARKET" \
@@ -103,12 +173,39 @@ print_status() {
       current: $current}'
 }
 
-fetch_market() {
+valid_bing_path() {
+  local path="$1"
+  local allowed_path_regex='^/[A-Za-z0-9._~/?&=%+,-]+$'
+  [[ ${#path} -le 4096 && $path =~ ^/th\? && $path != *$'\r'* && $path != *$'\n'* && $path != *\\* ]] || return 1
+  [[ $path =~ $allowed_path_regex ]] || return 1
+  [[ $path != *"/../"* && $path != *"/.." ]] || return 1
+}
+
+validated_bing_url() {
+  local path="$1"
+  valid_bing_path "$path" || {
+    log "Bing supplied an invalid relative image path"
+    return 1
+  }
+  printf '%s%s\n' "$BING_ORIGIN" "$path"
+}
+
+limited_curl() {
+  local max_bytes="$1"
+  shift
+  local max_blocks=$((max_bytes / 1024 + 1))
+  ulimit -f "$max_blocks" || return 1
+  curl --disable --proto '=https' --proto-redir '=https' --globoff \
+    --fail --silent --show-error --max-filesize "$max_bytes" "$@"
+}
+
+download_feed() {
   local market="$1"
-  local response_file image_url fallback_url url_base start_date image_hash image_file metadata_file temp_file
+  local output="$2"
   local request_market="$market"
   local request_language="${market:0:2}"
   local request_country="${market:3:2}"
+  local result http_status
 
   if [[ $market == "global" ]]; then
     request_market="en-ROW"
@@ -116,10 +213,9 @@ fetch_market() {
     request_country="RU"
   fi
 
-  response_file=$(mktemp "$CACHE_DIR/.response.XXXXXX") || return 1
-  if ! curl --fail --silent --show-error --location \
-    --retry 3 --connect-timeout 15 --max-time 90 \
-    --get 'https://www.bing.com/HPImageArchive.aspx' \
+  result=$(limited_curl "$MAX_FEED_BYTES" \
+    --retry 3 --retry-max-time 120 --connect-timeout 15 --max-time 90 \
+    --get "$BING_FEED_URL" \
     --data-urlencode 'format=js' \
     --data-urlencode 'idx=0' \
     --data-urlencode 'n=1' \
@@ -127,135 +223,250 @@ fetch_market() {
     --data-urlencode "mkt=$request_market" \
     --data-urlencode "setlang=$request_language" \
     --data-urlencode "cc=$request_country" \
-    --output "$response_file"; then
-    log "could not fetch the Bing feed for $market"
-    rm -f "$response_file"
+    --output "$output" --write-out '%{http_code}') || return 1
+  http_status="$result"
+  [[ $http_status == "200" ]] || {
+    log "Bing feed returned HTTP $http_status"
     return 1
-  fi
+  }
+  [[ -s $output ]] || {
+    log "Bing returned an empty feed"
+    return 1
+  }
+}
 
-  if ! jq -e '.images | type == "array" and length > 0' "$response_file" >/dev/null 2>&1; then
+valid_cached_jpeg() {
+  local path="$1"
+  local size probe
+
+  [[ -f $path && ! -L $path ]] || return 1
+  size=$(stat -c '%s' -- "$path") || return 1
+  (( size > 0 && size <= MAX_IMAGE_BYTES )) || return 1
+  probe=$(ffprobe -v error -select_streams v:0 \
+    -show_entries stream=codec_name,width,height -of json -- "$path" 2>/dev/null) || return 1
+  jq -e --argjson maxDimension "$MAX_IMAGE_DIMENSION" \
+    --argjson maxPixels "$MAX_IMAGE_PIXELS" '
+    (.streams | type == "array" and length == 1) and
+    (.streams[0].codec_name == "mjpeg") and
+    (.streams[0].width | type == "number" and . > 0 and . <= $maxDimension) and
+    (.streams[0].height | type == "number" and . > 0 and . <= $maxDimension) and
+    ((.streams[0].width * .streams[0].height) <= $maxPixels)' <<<"$probe" >/dev/null || return 1
+  ffmpeg -v error -nostdin -i "$path" -map 0:v:0 -frames:v 1 -f null - >/dev/null 2>&1
+}
+
+download_image() {
+  local url="$1"
+  local output="$2"
+  local result http_status content_type
+
+  result=$(limited_curl "$MAX_IMAGE_BYTES" \
+    --retry 3 --retry-max-time 240 --connect-timeout 15 --max-time 180 \
+    --max-redirs 0 --output "$output" --write-out '%{http_code}|%{content_type}' \
+    --url "$url") || return 1
+  [[ $result == *"|"* ]] || return 1
+  http_status="${result%%|*}"
+  content_type="${result#*|}"
+  [[ $http_status == "200" ]] || return 1
+  content_type="${content_type,,}"
+  content_type="${content_type%%;*}"
+  [[ $content_type == "image/jpeg" || $content_type == "image/jpg" ]] || return 1
+  valid_cached_jpeg "$output"
+}
+
+fetch_market() {
+  local market="$1"
+  local response_file image_url fallback_url url_base start_date image_file
+  local image_hash metadata_file metadata_temp temp_file
+
+  response_file=$(mktemp "$CACHE_DIR/.response.XXXXXX") || return 1
+  TEMP_FILES+=("$response_file")
+  download_feed "$market" "$response_file" || return 1
+
+  jq -e '
+    type == "object" and
+    (.images | type == "array" and length > 0) and
+    (.images[0] | type == "object") and
+    (.images[0].url | type == "string" and length > 0 and length <= 4096) and
+    (.images[0].urlbase == null or (.images[0].urlbase | type == "string" and length <= 4096)) and
+    (.images[0].startdate | type == "string" and test("^[0-9]{8}$")) and
+    ((.images[0].copyright // "") | type == "string" and length <= 4096) and
+    ((.images[0].title // "") | type == "string" and length <= 1024)' \
+    "$response_file" >/dev/null || {
     log "Bing returned an invalid feed for $market"
-    rm -f "$response_file"
-    return 1
-  fi
-
-  fallback_url=$(jq -r '.images[0].url // empty' "$response_file")
-  url_base=$(jq -r '.images[0].urlbase // empty' "$response_file")
-  start_date=$(jq -r '.images[0].startdate // empty' "$response_file")
-  image_hash=$(jq -r '.images[0].hsh // empty' "$response_file")
-  [[ -n $fallback_url && $start_date =~ ^[0-9]{8}$ ]] || {
-    log "the Bing feed is missing its image URL or date"
-    rm -f "$response_file"
     return 1
   }
 
-  [[ $fallback_url == http://* || $fallback_url == https://* ]] \
-    || fallback_url="https://www.bing.com$fallback_url"
+  fallback_url=$(jq -r '.images[0].url' "$response_file") || return 1
+  url_base=$(jq -r '.images[0].urlbase // empty' "$response_file") || return 1
+  start_date=$(jq -r '.images[0].startdate' "$response_file") || return 1
+  fallback_url=$(validated_bing_url "$fallback_url") || return 1
   if [[ -n $url_base ]]; then
-    [[ $url_base == http://* || $url_base == https://* ]] \
-      && image_url="${url_base}_UHD.jpg" \
-      || image_url="https://www.bing.com${url_base}_UHD.jpg"
+    url_base=$(validated_bing_url "$url_base") || return 1
+    image_url="${url_base}_UHD.jpg"
   else
     image_url="$fallback_url"
   fi
-  [[ -n $image_hash ]] || image_hash=$(printf '%s' "$image_url" | sha256sum | cut -c1-16)
 
+  image_hash=$(printf '%s' "$image_url" | sha256sum) || return 1
+  image_hash="${image_hash%% *}"
+  image_hash="${image_hash:0:32}"
   image_file="$CACHE_DIR/${market}-${start_date}-${image_hash}.jpg"
   metadata_file="$CACHE_DIR/current.json"
 
-  if [[ ! -s $image_file ]]; then
-    temp_file=$(mktemp "$CACHE_DIR/.image.XXXXXX") || {
-      rm -f "$response_file"
+  if ! valid_cached_jpeg "$image_file"; then
+    if [[ -e $image_file && ! -f $image_file && ! -L $image_file ]]; then
+      log "refusing to replace a non-regular cache entry: $image_file"
       return 1
-    }
-    if ! curl --fail --silent --location \
-      --retry 3 --connect-timeout 15 --max-time 180 \
-      --output "$temp_file" "$image_url"; then
-      if [[ $image_url == "$fallback_url" ]] \
-        || ! curl --fail --silent --show-error --location \
-          --retry 3 --connect-timeout 15 --max-time 180 \
-          --output "$temp_file" "$fallback_url"; then
-        log "could not download the Bing image for $market"
-        rm -f "$response_file" "$temp_file"
+    fi
+    temp_file=$(mktemp "$CACHE_DIR/.image.XXXXXX") || return 1
+    TEMP_FILES+=("$temp_file")
+    if ! download_image "$image_url" "$temp_file" 2>/dev/null; then
+      if [[ $image_url == "$fallback_url" ]]; then
+        log "could not download a valid Bing image for $market"
         return 1
       fi
+      : >"$temp_file" || return 1
+      download_image "$fallback_url" "$temp_file" || {
+        log "could not download a valid Bing image for $market"
+        return 1
+      }
       image_url="$fallback_url"
     fi
-    if [[ ! -s $temp_file ]]; then
-      log "Bing returned an empty image for $market"
-      rm -f "$response_file" "$temp_file"
+    mv -f -- "$temp_file" "$image_file" || {
+      log "could not atomically store the Bing image"
       return 1
-    fi
-    mv "$temp_file" "$image_file"
+    }
   fi
 
-  jq --arg market "$market" --arg path "$image_file" --arg imageUrl "$image_url" \
-    '.images[0] + {market: $market, localPath: $path, downloadedUrl: $imageUrl}' \
-    "$response_file" >"$metadata_file.tmp" \
-    && mv "$metadata_file.tmp" "$metadata_file"
-  rm -f "$response_file"
-  printf '%s\n' "$image_file"
+  metadata_temp=$(mktemp "$CACHE_DIR/.current.XXXXXX") || return 1
+  TEMP_FILES+=("$metadata_temp")
+  jq --arg market "$market" --arg path "$image_file" --arg imageUrl "$image_url" '
+    .images[0] |
+    {startdate: .startdate,
+     title: (.title // ""),
+     copyright: (.copyright // ""),
+     copyrightlink: (.copyrightlink // ""),
+     market: $market, localPath: $path, downloadedUrl: $imageUrl}' \
+    "$response_file" >"$metadata_temp" || return 1
+  mv -f -- "$metadata_temp" "$metadata_file" || {
+    log "could not atomically store Bing metadata"
+    return 1
+  }
+  FETCHED_IMAGE="$image_file"
+  return 0
 }
 
 prune_cache() {
   local market="$1"
-  mapfile -t old_files < <(
-    find "$CACHE_DIR" -maxdepth 1 -type f -name "${market}-*.jpg" -printf '%T@ %p\n' \
-      | sort -rn | tail -n +9 | cut -d' ' -f2-
-  )
-  ((${#old_files[@]} == 0)) || rm -f -- "${old_files[@]}"
+  local list_file
+  local -a files old_files
+
+  list_file=$(mktemp "$STATE_DIR/.prune.XXXXXX") || return 1
+  TEMP_FILES+=("$list_file")
+  find "$CACHE_DIR" -maxdepth 1 -type f -name "${market}-*.jpg" -print0 >"$list_file" || return 1
+  sort -zr "$list_file" -o "$list_file" || return 1
+  mapfile -d '' -t files <"$list_file" || return 1
+  if ((${#files[@]} > 8)); then
+    old_files=("${files[@]:8}")
+    rm -f -- "${old_files[@]}" || {
+      log "could not prune the Bing image cache"
+      return 1
+    }
+  fi
 }
 
 main() {
   local selected_image=""
+  local current_background=""
+  local canonical_selected=""
 
+  validate_paths || return 1
   require_command curl || return 1
   require_command jq || return 1
   require_command flock || return 1
-  require_command omarchy || return 1
+  require_command sha256sum || return 1
+  require_command stat || return 1
+  require_command ffprobe || return 1
+  require_command ffmpeg || return 1
+  require_command find || return 1
+  require_command sort || return 1
+  ensure_private_directory "$CACHE_DIR" || return 1
+  ensure_private_directory "$STATE_DIR" || return 1
 
-  mkdir -p "$CACHE_DIR" "$STATE_DIR"
-  exec 9>"$LOCK_FILE"
-  flock -n 9 || return 0
+  if [[ -L $LOCK_FILE || (-e $LOCK_FILE && ! -f $LOCK_FILE) ]]; then
+    log "refusing to use an unexpected lock file: $LOCK_FILE"
+    return 1
+  fi
+  exec 9>"$LOCK_FILE" || {
+    log "could not open lock file: $LOCK_FILE"
+    return 1
+  }
+  chmod 600 -- "$LOCK_FILE" || return 1
+  flock -n 9
+  case $? in
+    0) ;;
+    1) return 0 ;;
+    *) log "could not acquire update lock"; return 1 ;;
+  esac
 
   [[ $SELECTED_MARKET != "auto" ]] || SELECTED_MARKET=$(locale_market)
-
-  selected_image=$(fetch_market "$SELECTED_MARKET") || true
-
-  [[ -n $selected_image && -s $selected_image ]] || {
+  fetch_market "$SELECTED_MARKET" || {
+    log "the image for $SELECTED_MARKET could not be retrieved"
+    return 1
+  }
+  selected_image="$FETCHED_IMAGE"
+  [[ -s $selected_image ]] || {
     log "the image for $SELECTED_MARKET could not be retrieved"
     return 1
   }
 
   if [[ $SET_WALLPAPER == "true" ]]; then
-    current_background=$(realpath "$STATE_HOME/omarchy/current/background" 2>/dev/null || true)
-    if [[ $current_background != "$selected_image" ]]; then
-      omarchy theme bg set "$selected_image"
+    require_command omarchy || return 1
+    canonical_selected=$(realpath -e -- "$selected_image") || {
+      log "could not resolve the downloaded image path"
+      return 1
+    }
+    current_background=$(realpath -e -- "$STATE_HOME/omarchy/current/background" 2>/dev/null || true)
+    if [[ $current_background != "$canonical_selected" ]]; then
+      omarchy theme bg set "$canonical_selected" 9>&- || {
+        log "could not set the wallpaper"
+        return 1
+      }
     fi
   fi
 
   prune_cache "$SELECTED_MARKET"
 }
 
+usage() {
+  log "usage: update-wallpaper [update [market set-wallpaper]|status [market set-wallpaper]|legacy-status]"
+}
+
 case "${1:-update}" in
   update)
-    if [[ -n ${2:-} && -n ${3:-} ]]; then
+    if (($# == 1)); then
+      require_command jq && read_legacy_config || exit 1
+    elif (($# == 3)); then
       load_settings "$2" "$3" || exit 1
     else
-      require_command jq && read_legacy_config || exit 1
+      usage
+      exit 2
     fi
     main
     ;;
   status)
+    (($# == 1 || $# == 3)) || { usage; exit 2; }
     require_command jq || exit 1
+    validate_paths || exit 1
     load_settings "${2:-auto}" "${3:-true}" || exit 1
     print_status
     ;;
   legacy-status)
-    require_command jq && read_legacy_config && print_status
+    (($# == 1)) || { usage; exit 2; }
+    require_command jq && validate_paths && read_legacy_config && print_status
     ;;
   *)
-    log "usage: update-wallpaper [update|status] [market] [set-wallpaper]"
+    usage
     exit 2
     ;;
 esac

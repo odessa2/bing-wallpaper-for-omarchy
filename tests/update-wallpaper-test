@@ -1,0 +1,104 @@
+#!/bin/bash
+
+set -euo pipefail
+
+ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+TEST_DIR=$(mktemp -d)
+trap 'rm -rf -- "$TEST_DIR"' EXIT
+
+FAKE_BIN="$TEST_DIR/bin"
+mkdir -p "$FAKE_BIN"
+
+cat >"$FAKE_BIN/curl" <<'EOF'
+#!/bin/bash
+set -euo pipefail
+output=""
+writeout=""
+for ((i = 1; i <= $#; i++)); do
+  arg="${!i}"
+  case "$arg" in
+    --output) i=$((i + 1)); output="${!i}" ;;
+    --write-out) i=$((i + 1)); writeout="${!i}" ;;
+  esac
+done
+printf '%s\n' "$*" >>"$FAKE_CURL_LOG"
+if [[ $* == *HPImageArchive.aspx* ]]; then
+  printf '%s' "$FAKE_FEED" >"$output"
+  [[ $writeout == '%{http_code}' ]] && printf '200'
+else
+  if [[ ${FAKE_IMAGE_MODE:-valid} == valid ]]; then
+    cp -- "$FAKE_IMAGE_FILE" "$output"
+  else
+    printf '<html>not an image</html>' >"$output"
+  fi
+  [[ $writeout == '%{http_code}|%{content_type}' ]] && printf '200|%s' "${FAKE_IMAGE_TYPE:-image/jpeg}"
+fi
+EOF
+chmod 700 "$FAKE_BIN/curl"
+
+cat >"$FAKE_BIN/omarchy" <<'EOF'
+#!/bin/bash
+if [[ ${FAKE_OMARCHY_FAIL:-0} == 1 ]]; then
+  exit 1
+fi
+EOF
+chmod 700 "$FAKE_BIN/omarchy"
+
+IMAGE_FILE="$TEST_DIR/valid.jpg"
+ffmpeg -v error -nostdin -f lavfi -i color=c=blue:s=320x200 \
+  -frames:v 1 -y "$IMAGE_FILE"
+
+export PATH="$FAKE_BIN:$PATH"
+export FAKE_IMAGE_FILE="$IMAGE_FILE"
+export FAKE_CURL_LOG="$TEST_DIR/curl.log"
+export XDG_CONFIG_HOME="$TEST_DIR/config"
+export XDG_CACHE_HOME="$TEST_DIR/cache"
+export XDG_STATE_HOME="$TEST_DIR/state"
+SCRIPT="$ROOT_DIR/scripts/update-wallpaper"
+
+reset_case() {
+  rm -rf -- "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME" "$XDG_STATE_HOME"
+  : >"$FAKE_CURL_LOG"
+}
+
+run_update() {
+  FAKE_FEED="$1" FAKE_IMAGE_MODE="${2:-valid}" FAKE_IMAGE_TYPE="${3:-image/jpeg}" \
+    FAKE_OMARCHY_FAIL="${4:-0}" \
+    "$SCRIPT" update en-US "${5:-false}"
+}
+
+reset_case
+run_update '{"images":[{"url":"/th?id=OHR.Test_1920x1080.jpg","urlbase":"/th?id=OHR.Test","startdate":"20260819","title":"Test","copyright":"Test"}]}'
+[[ $(find "$XDG_CACHE_HOME/omarchy/bing-wallpaper" -maxdepth 1 -name '*.jpg' -type f | wc -l) == 1 ]]
+jq -e '.market == "en-US" and (.downloadedUrl | startswith("https://www.bing.com/"))' \
+  "$XDG_CACHE_HOME/omarchy/bing-wallpaper/current.json" >/dev/null
+"$SCRIPT" status en-US false | jq -e '.current | type == "object" and .localPath != null' >/dev/null
+! grep -q -- 'attacker' "$FAKE_CURL_LOG"
+
+reset_case
+if run_update '{"images":[{"url":"https://attacker.invalid/image.jpg","startdate":"20260819"}]}' false; then
+  echo 'absolute feed URL was accepted' >&2
+  exit 1
+fi
+[[ $(wc -l <"$FAKE_CURL_LOG") == 1 ]]
+! grep -q -- 'attacker.invalid' "$FAKE_CURL_LOG"
+
+reset_case
+if run_update '{"images":[{"url":"/th?id=OHR.Test_1920x1080.jpg","startdate":"20260819"}]}' invalid text/html; then
+  echo 'non-image response was accepted' >&2
+  exit 1
+fi
+[[ ! -e "$XDG_CACHE_HOME/omarchy/bing-wallpaper/current.json" ]]
+
+reset_case
+if run_update '{"images":[{"url":"/th?id=OHR.Test_1920x1080.jpg","startdate":"20260819"}]}' valid image/jpeg 1 true; then
+  echo 'wallpaper command failure was ignored' >&2
+  exit 1
+fi
+
+if grep -q -- '--location' "$FAKE_CURL_LOG"; then
+  echo 'curl redirect following is enabled' >&2
+  exit 1
+fi
+
+printf 'update-wallpaper tests passed\n'

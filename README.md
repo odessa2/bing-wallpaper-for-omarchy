@@ -15,7 +15,8 @@ requested and downloaded during a check.
 ## Requirements
 
 - Omarchy 4 / Quattro
-- `curl`, `jq`, `flock`, and `sha256sum` (included in a standard Omarchy install)
+- `curl`, `jq`, `flock`, `sha256sum`, `ffmpeg`, and `ffprobe` (included in a
+  standard Omarchy install)
 - Network access to `www.bing.com`
 
 The plugin runs without elevated privileges. It contacts Bing's homepage image
@@ -139,3 +140,7 @@ metadata; this plugin does not grant redistribution rights.
 Images are requested from Bing's `_UHD.jpg` asset, which is the highest-quality
 version exposed by the feed. The normal feed URL is used only when a particular
 image has no UHD asset.
+
+For safety, the downloader accepts only Bing-relative image paths, does not
+follow redirects, limits response sizes, and validates that downloaded bytes
+decode as a JPEG before caching or applying them as the wallpaper.
