@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "io.github.odessa2.bing-wallpaper",
   "name": "Bing Wallpaper for Omarchy",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "author": "Daniel Goetz",
   "license": "MIT",
   "description": "Automatically downloads the current Bing homepage image for a configurable market every hour, with an optional download-only mode and native Omarchy bar controls.",

@@ -122,6 +122,7 @@ Panel {
             anchors.centerIn: parent
             visible: previewImage.status !== Image.Ready
             text: service && service.busy ? "Downloading image…" : "No image downloaded yet"
+            textFormat: Text.PlainText
             color: Qt.darker(root.foreground, 1.35)
             font.family: root.fontFamily
             font.pixelSize: Style.font.body
@@ -129,10 +130,12 @@ Panel {
         }
 
         Text {
+          id: attributionText
           width: parent.width
           text: service && service.currentImage
             ? String(service.currentImage.copyright || service.currentImage.title || "Bing homepage image")
             : "Bing homepage image"
+          textFormat: Text.PlainText
           color: root.foreground
           font.family: root.fontFamily
           font.pixelSize: Style.font.body
@@ -180,6 +183,7 @@ Panel {
           Text {
             anchors.verticalCenter: parent.verticalCenter
             text: "Right-click the bar widget to refresh"
+            textFormat: Text.PlainText
             color: Qt.darker(root.foreground, 1.45)
             font.family: root.fontFamily
             font.pixelSize: Style.font.caption
@@ -190,6 +194,7 @@ Panel {
           width: parent.width
           visible: service && service.lastError !== ""
           text: service ? service.lastError : ""
+          textFormat: Text.PlainText
           color: Color.urgent
           font.family: root.fontFamily
           font.pixelSize: Style.font.caption

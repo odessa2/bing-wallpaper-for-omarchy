@@ -56,9 +56,9 @@ BarWidget {
     bar: root.bar
     text: "\uf1c5"
     active: root.service ? root.service.busy : false
-    tooltipText: root.service && root.service.currentImage
-      ? String(root.service.currentImage.copyright || "Bing Wallpaper for Omarchy")
-      : "Bing Wallpaper for Omarchy"
+    // The shared bar tooltip uses Text.AutoText. Keep this value static so
+    // Bing-controlled metadata can never be interpreted as rich text there.
+    tooltipText: "Bing Wallpaper for Omarchy"
     onPressed: function(buttonCode) {
       if (buttonCode === Qt.RightButton) {
         if (root.service) root.service.refresh()

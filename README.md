@@ -160,3 +160,6 @@ image has no UHD asset.
 For safety, the downloader accepts only Bing-relative image paths, does not
 follow redirects, limits response sizes, and validates that downloaded bytes
 decode as a JPEG before caching or applying them as the wallpaper.
+Bing-provided titles and copyright attribution are rendered explicitly as
+plain text. They are never interpreted as rich text or used as tooltip markup,
+so embedded tags cannot trigger additional network resource loads.
