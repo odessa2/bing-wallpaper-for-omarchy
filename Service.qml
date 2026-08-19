@@ -1,4 +1,5 @@
 import QtQuick
+import Quickshell
 import Quickshell.Io
 
 Item {
@@ -8,6 +9,12 @@ Item {
   property var manifest: null
 
   readonly property string pluginId: "io.github.odessa2.bing-wallpaper"
+  readonly property string home: Quickshell.env("HOME")
+  readonly property string cacheHome: Quickshell.env("XDG_CACHE_HOME") || home + "/.cache"
+  readonly property string stateHome: Quickshell.env("XDG_STATE_HOME") || home + "/.local/state"
+  readonly property string imagesDir: cacheHome + "/omarchy/bing-wallpaper"
+  readonly property string backgroundLink: stateHome + "/omarchy/current/background"
+  readonly property string themeNamePath: stateHome + "/omarchy/current/theme.name"
   property int lastExitCode: -1
   property string lastError: ""
   property string lastRunAt: ""
@@ -23,6 +30,12 @@ Item {
   property bool legacySetWallpaper: true
   property string legacyStatusText: ""
   property bool refreshPending: false
+  property string currentBackground: ""
+  readonly property bool ownsBackground: isPluginBackground(currentBackground)
+  property bool ownershipEstablished: false
+  property string themeName: ""
+  property string reapplyFile: ""
+  property bool themeTransitionActive: false
   readonly property bool busy: updateProcess.running
 
   readonly property string sourceDir: manifest && manifest.__sourceDir
@@ -44,15 +57,23 @@ Item {
     var layout = config && config.bar && config.bar.layout
       ? config.bar.layout
       : null
-    if (!layout) return null
+    if (layout) {
+      var sections = ["left", "center", "right"]
+      for (var s = 0; s < sections.length; s++) {
+        var entries = layout[sections[s]]
+        if (!entries || typeof entries.length !== "number") continue
+        for (var i = 0; i < entries.length; i++) {
+          var entry = entries[i]
+          if (entry && String(entry.id || "") === pluginId) return entry
+        }
+      }
+    }
 
-    var sections = ["left", "center", "right"]
-    for (var s = 0; s < sections.length; s++) {
-      var entries = layout[sections[s]]
-      if (!entries || typeof entries.length !== "number") continue
-      for (var i = 0; i < entries.length; i++) {
-        var entry = entries[i]
-        if (entry && String(entry.id || "") === pluginId) return entry
+    var plugins = config && config.plugins
+    if (plugins && typeof plugins.length === "number") {
+      for (var p = 0; p < plugins.length; p++) {
+        var plugin = plugins[p]
+        if (plugin && String(plugin.id || "") === pluginId) return plugin
       }
     }
     return null
@@ -68,6 +89,7 @@ Item {
     var changed = market !== normalizedMarket || setWallpaper !== normalizedSetWallpaper
     market = normalizedMarket
     setWallpaper = normalizedSetWallpaper
+    if (!normalizedSetWallpaper) ownershipEstablished = false
     settingsSource = source || settingsSource
     settingsReady = true
     return changed
@@ -75,6 +97,64 @@ Item {
 
   function setConfiguration(nextMarket, nextSetWallpaper) {
     applyConfiguration(nextMarket, nextSetWallpaper, "shell")
+  }
+
+  function isPluginBackground(path) {
+    var candidate = String(path || "")
+    return candidate !== "" && candidate.indexOf(imagesDir + "/") === 0
+  }
+
+  function disableWallpaperApplication() {
+    if (!setWallpaper) return
+
+    var existing = inlineEntry()
+    var entry = { id: pluginId }
+    if (existing) {
+      for (var key in existing) if (key !== "id") entry[key] = existing[key]
+    }
+    entry.market = market
+    entry.setWallpaper = false
+
+    applyConfiguration(market, false, "shell")
+    if (shell && typeof shell.updateEntryInline === "function") {
+      if (!shell.updateEntryInline(pluginId, entry))
+        console.warn("bing-wallpaper: could not persist automatic setWallpaper=false")
+    } else {
+      console.warn("bing-wallpaper: shell cannot persist automatic setWallpaper=false")
+    }
+  }
+
+  function adoptBackgroundPath(path) {
+    var candidate = String(path || "").trim()
+    currentBackground = candidate
+
+    if (isPluginBackground(candidate)) {
+      if (setWallpaper) ownershipEstablished = true
+      return
+    }
+
+    if (setWallpaper && ownershipEstablished && !themeTransitionActive) {
+      console.log("bing-wallpaper: manual background change detected; disabling wallpaper application")
+      disableWallpaperApplication()
+    }
+  }
+
+  function refreshBackgroundPath() {
+    if (!backgroundPathProcess.running) backgroundPathProcess.running = true
+  }
+
+  function onThemeNameRead(name) {
+    var nextName = String(name || "").trim()
+    var previousName = themeName
+    themeName = nextName
+    if (previousName === "" || previousName === nextName) return
+
+    themeSettleTimer.restart()
+    if (!setWallpaper || !ownershipEstablished || !ownsBackground) return
+
+    reapplyFile = currentBackground
+    themeTransitionActive = true
+    reapplyTimer.restart()
   }
 
   function syncConfigurationFromShell() {
@@ -191,6 +271,8 @@ Item {
       root.lastRunAt = new Date().toISOString()
       if (exitCode !== 0 && root.lastError !== "")
         console.warn("bing-wallpaper:", root.lastError)
+      if (exitCode === 0 && root.setWallpaper)
+        root.refreshBackgroundPath()
       if (root.refreshPending) {
         root.refreshPending = false
         root.refresh()
@@ -230,12 +312,81 @@ Item {
     }
   }
 
+  Process {
+    id: backgroundPathProcess
+    command: ["readlink", "-f", root.backgroundLink]
+
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.adoptBackgroundPath(text)
+    }
+  }
+
+  Process {
+    id: reapplyProcess
+
+    stderr: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        var message = String(text || "").trim()
+        if (message !== "") console.warn("bing-wallpaper:", message)
+      }
+    }
+
+    onExited: function(exitCode) {
+      if (exitCode !== 0)
+        console.warn("bing-wallpaper: could not restore the wallpaper after the theme change")
+      root.reapplyFile = ""
+      root.themeTransitionActive = false
+      root.refreshBackgroundPath()
+    }
+  }
+
+  FileView {
+    id: themeView
+    path: root.themeNamePath
+    watchChanges: true
+    printErrors: false
+    onFileChanged: reload()
+    onLoaded: root.onThemeNameRead(text())
+    onLoadFailed: root.themeName = ""
+  }
+
   Timer {
     interval: 60 * 60 * 1000
     running: root.helperPath !== "" && root.settingsReady
     repeat: true
     triggeredOnStart: true
     onTriggered: root.refresh()
+  }
+
+  Timer {
+    interval: 60 * 1000
+    running: true
+    repeat: true
+    triggeredOnStart: true
+    onTriggered: root.refreshBackgroundPath()
+  }
+
+  Timer {
+    id: themeSettleTimer
+    interval: 2500
+    repeat: false
+    onTriggered: root.refreshBackgroundPath()
+  }
+
+  Timer {
+    id: reapplyTimer
+    interval: 1800
+    repeat: false
+    onTriggered: {
+      if (root.reapplyFile === "") {
+        root.themeTransitionActive = false
+        return
+      }
+      reapplyProcess.command = ["omarchy", "theme", "bg", "set", root.reapplyFile]
+      reapplyProcess.running = true
+    }
   }
 
   Connections {
@@ -266,6 +417,10 @@ Item {
         settingsReady: root.settingsReady,
         settingsSource: root.settingsSource,
         currentImage: root.currentImage,
+        currentBackground: root.currentBackground,
+        ownsBackground: root.ownsBackground,
+        ownershipEstablished: root.ownershipEstablished,
+        themeTransitionActive: root.themeTransitionActive,
         lastExitCode: root.lastExitCode,
         lastError: root.lastError,
         lastRunAt: root.lastRunAt

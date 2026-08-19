@@ -36,6 +36,21 @@ Right-click the bar widget to refresh immediately. With **Set as wallpaper**
 off, hourly polling and download of the selected market continue but the
 desktop is not changed.
 
+The service also watches Omarchy's current background once per minute. If it
+previously owned the background and detects that you selected a different one
+manually, it automatically turns **Set as wallpaper** off in `shell.json`.
+Downloads, preview updates, and attribution continue; only automatic wallpaper
+application stops. Turn the option back on whenever you want the plugin to take
+ownership again.
+
+Theme changes are handled separately. If a cached Bing image was still the
+active background immediately before the theme switch, the service restores
+that same image after Omarchy's theme transition. If the plugin did not own the
+background, it leaves the theme or manually selected background alone. Because
+manual changes are detected by a one-minute poll, changing the background and
+then switching themes within that same minute can restore the Bing image once;
+the following poll detects the manual choice and disables wallpaper application.
+
 The icon inherits Omarchy's bar foreground color. For a transparent bar,
 Omarchy automatically chooses between the theme's text and background colors
 after the wallpaper changes. Double-click an empty part of the bar to toggle
@@ -93,7 +108,8 @@ The values are stored with the widget in `~/.config/omarchy/shell.json`:
   Rest-of-World feed, or use a market such as `de-DE`, `en-GB`, or `ja-JP`.
 - `setWallpaper`: set to `false` to keep polling and downloading the selected
   market without changing the system background. The bar panel exposes this as
-  a native toggle.
+  a native toggle and the service also switches it off when it detects a manual
+  background change.
 
 Omarchy writes this entry atomically and hot-reloads it without rebuilding the
 rest of the bar. The settings are also available through Omarchy's native bar
