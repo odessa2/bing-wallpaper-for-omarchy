@@ -132,6 +132,11 @@ When no inline settings exist yet, version 1.0.1 reads the previous
 the bar panel stores both values in `shell.json`; the legacy file can then be
 removed. The plugin never rewrites `shell.json` merely because it was updated.
 
+## Credits
+
+Thanks to Shimon Rura for diagnosing and fixing the third-party plugin API
+compatibility issue in [pull request #2](https://github.com/odessa2/bing-wallpaper-for-omarchy/pull/2).
+
 ## Remove
 
 ```sh
